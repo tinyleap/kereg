@@ -17,64 +17,11 @@ gauss <- function(x) {
   temp <- colSums(x^2)
   exp(-temp/2)
 }
-# gauss <- function(x)mvtnorm::dmvnorm(t(x))
-# bikereg.est <- function(X, Y, time, res, t, s, H, kernel=bound_gauss) {
-#   kx <- kernel(solve(H, rbind(time-t, res-s)))*X
-#   id <- complete.cases(kx)
-#   xtx <- t(kx[id,])%*%X[id,]
-#   if (qr(xtx)$rank<dim(xtx)[1]) rep(NA, dim(xtx)[1])
-#   else solve(xtx, t(kx[id,])%*%Y[id])
-# }
-# bikereg.cv <- function(X, Y, time, res, H, kernel=bound_gauss, nfolds=5, cl=NULL) {
-#   id <- !is.na(res)
-#   coords <- paste(time, res, sep=',')
-#   uniq.coords <- unique(coords[id])
-#   match.coords <- match(coords, uniq.coords)
-#   if (!is.list(H) || length(H)==0) stop('H must be a list!')
-#   set.seed(1)
-#   folds <- split(sample.int(length(Y)), rep(1:nfolds, length.out=length(Y)))
-#   foo <- function(x, i, j) {
-#     x <- as.numeric(strsplit(x, ',')[[1]])
-#     bikereg.est(X[-folds[[j]],], Y[-folds[[j]]], time[-folds[[j]]], res[-folds[[j]]], x[1], x[2], H[[i]])
-#   }
-#   if (is.null(cl)) {
-#     stop('Please create a cluster!')
-#     for (i in 1:length(H)) {
-#       cat(i)
-#       beta.table[[i]] <- vector('list', nfolds)
-#       for (j in 1:nfolds) {
-#         cat(j)
-#         beta.table[[i]][[j]] <- t(sapply(coords, foo))
-#       }
-#     }
-#   } else {
-#     clusterExport(cl, c('folds', 'X', 'Y', 'time', 'res', 'coords', 'foo', 'H', 'match.coords'), envir=environment())
-#     clusterExport(cl, c('bikereg.est', 'MSE', 'bound_gauss'))
-#     job <- function(x) {
-#       x <- as.numeric(strsplit(x, ',')[[1]])
-#       i <- x[1]
-#       j <- x[2]
-#       beta <- t(sapply(uniq.coords, function(x)foo(x, i, j)))
-#       MSE(X[folds[[j]],], Y[folds[[j]]], beta[match.coords[folds[[j]]],], res[folds[[j]]])
-#     }
-#     jobs.id <- expand.grid(1:length(H), 1:nfolds)
-#     result <- parLapply(cl, paste(jobs.id$Var1, jobs.id$Var2, sep=','), job)
-#   }
-#   lapply(1:length(H), function(x)do.call(rbind, result[jobs.id$Var1==x]))
-# }
-# MSE <- function(X, Y, beta, res) {
-#   temp <- Y-rowSums(X*beta)
-#   result <- c(mean(temp^2, na.rm=T), mean(is.na(res)), sum(is.na(temp))/sum(!is.na(res)))
-#   names(result) <- c('MSE', 'NA_censored', 'NA_among_uncensored')
-#   result
-# }
 kereg.est <- function(t, X, Y, time, H, kernel=bound_gauss) {
-  coords <- do.call(rbind, time)
-  k <- kernel(solve(H, coords-t))
-  id <- !is.na(k) & !is.na(Y) ## when Y is residual, this could be NA where k is not
+  k <- kernel(solve(H, t(time)-t))
   kx <- k*X
-  xkx <- t(kx[id,])%*%X[id,]
-  result <- try(solve(xkx, t(kx[id,])%*%Y[id])[,1], silent = T)
+  xkx <- t(kx)%*%X
+  result <- try(solve(xkx, t(kx)%*%Y)[,1], silent = T)
   if (inherits(result, 'try-error')) {
     rep(NA, dim(X)[2])
   } else {
@@ -82,12 +29,10 @@ kereg.est <- function(t, X, Y, time, H, kernel=bound_gauss) {
   }
 }
 kereg.var <- function(t, X, Y, time, H, kernel=bound_gauss) {
-  coords <- do.call(rbind, time)
-  k <- kernel(solve(H, coords-t))
-  id <- !is.na(k) & !is.na(Y)
+  k <- kernel(solve(H, t(time)-t))
   kx <- k*X
-  xkx <- t(kx[id,])%*%X[id,]
-  xk2x <- t(kx[id,])%*%kx[id,]
+  xkx <- t(kx)%*%X
+  xk2x <- t(kx)%*%kx
   inv <- try(solve(xkx), T)
   if (inherits(inv, 'try-error')) {
     matrix(NA, dim(X)[2], dim(X)[2])
@@ -95,13 +40,12 @@ kereg.var <- function(t, X, Y, time, H, kernel=bound_gauss) {
     inv%*%xk2x%*%inv
   }
 }
-kereg.cv <- function(X, Y, time, H, kernel=bound_gauss, nfolds=5, cl=NULL, loss=MSE) {
-  id <- !Reduce('|', lapply(time, is.na))
+kereg.nfold <- function(X, Y, time, H, kernel=bound_gauss, nfolds=5, cl=NULL, loss=MSE) {
   coords <- do.call(function(...)paste(sep=',', ...), time)
-  uniq.coords <- unique(coords[id])
+  uniq.coords <- unique(coords)
   match.coords <- match(coords, uniq.coords)
   if (!is.list(H) || length(H)==0) stop('H must be a list!')
-  folds <- split(which(id), rep(1:nfolds, length.out=sum(id))) ## only CV on complete cases
+  folds <- split(unique(), rep(1:nfolds, length.out=sum(id))) ## only CV on complete cases
   ## Input x is the (t,s) where to evaluate beta, i is the id of H, j is the id of fold
   ## Output beta(t,s)
   foo <- function(x, i, j) {
@@ -115,7 +59,7 @@ kereg.cv <- function(X, Y, time, H, kernel=bound_gauss, nfolds=5, cl=NULL, loss=
     x <- as.numeric(strsplit(x, ',')[[1]])
     i <- x[1]
     j <- x[2]
-    beta <- lapply(uniq.coords, function(x)foo(x, i, j))
+    beta <- lapply(uniq.coords, function(x)foo(x, i, j)) ## Calculate beta for all uniq.coords might be unnecessary.
     beta <- do.call(rbind, beta)
     loss(X[folds[[j]],,drop=F], Y[folds[[j]]], beta[match.coords[folds[[j]]],,drop=F])
   }
@@ -128,6 +72,24 @@ kereg.cv <- function(X, Y, time, H, kernel=bound_gauss, nfolds=5, cl=NULL, loss=
     clusterExport(cl, c('kereg.est'))
     result <- parLapply(cl, paste(jobs.id$Var1, jobs.id$Var2, sep=','), job)
   }
+  lapply(1:length(H), function(x)do.call(rbind, result[jobs.id$Var1==x]))
+}
+kereg.loso <- function(X, Y, time, id, H, cl, kernel=bound_gauss, loss=MSE) {
+  stop()
+  if (dim(X)[1]!=length(Y)) stop('Dimension mismatch! (X and Y)')
+  if (class(time)!='data.frame') stop('Time coordinates must be formed into a data frame!')
+  if (!is.list(H) || length(H)==0) stop('H must be a list!')
+  job <- function(code) {
+    decode <- strsplit(code, ',')[[1]]
+    param <- H[[as.numeric(decode[1])]]
+    test <- id==decode[2]
+    betahat <- t(apply(time[test,], 1, function(x)kereg.est(x, X[!test,], Y[!test], time[!test,], param, kernel=kernel)))
+    loss(X[test,], Y[test], betahat)
+  }
+  clusterExport(cl, c('id', 'H', 'X', 'Y', 'time', 'loss', 'kernel'), envir=environment())
+  clusterExport(cl, c('kereg.est'))
+  jobs.id <- expand.grid(1:length(H), unique(id))
+  result <- parLapply(cl, paste(jobs.id$Var1, jobs.id$Var2, sep=','), job)
   lapply(1:length(H), function(x)do.call(rbind, result[jobs.id$Var1==x]))
 }
 MSE <- function(X, Y, beta) {
